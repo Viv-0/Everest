@@ -54,7 +54,7 @@ namespace MonoMod {
         // If there's a way to store this object to a living stack where it's only allocated to the stack for a short time that would be more ideal but I don't know of a way to do so.
         public static void PatchEntityCtor(ILContext context, CustomAttribute attrib) {
             FieldReference f_Entity_EntityData = context.Method.DeclaringType.FindField("EntityData");
-            MethodReference m_LevelExt_GrabTemporaryEntityData = MonoModRule.Modder.Module.GetType("Celeste.LevelExt").FindMethod("GrabTemporaryEntityData");
+            MethodReference m_LevelExt_GrabTemporaryEntityData = MonoModRule.Modder.Module.GetType("Celeste.Level").FindMethod("GrabTemporaryEntityData");
 
             ILCursor cursor = new ILCursor(context);
             cursor.GotoNext(MoveType.Before, instr => instr.MatchLdarg(0), instr => instr.MatchLdarg(1));
