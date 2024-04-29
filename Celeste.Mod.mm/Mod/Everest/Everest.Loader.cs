@@ -640,7 +640,7 @@ namespace Celeste.Mod {
 
                             ctor = type.GetConstructor(Type.EmptyTypes);
                             if (ctor != null) {
-                                loader = (level, levelData, offset, entityData) => (Entity) ctor.Invoke(Array.Empty<object>());
+                                loader = (level, levelData, offset, entityData) => (Entity) ctor.Invoke(null);
                                 TypeHelper.LinkDataNameToType(id, type, false);
                                 goto RegisterEntityLoader;
                             }
