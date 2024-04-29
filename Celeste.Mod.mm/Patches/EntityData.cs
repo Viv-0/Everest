@@ -15,11 +15,10 @@ namespace Celeste {
                 return false;
             return orig_Has(key);
         }
-        internal string BackupLevelString;
         public EntityID EntityID;
 
         internal void SetEntityID(bool? isTrigger = null) {
-            EntityID = new EntityID(Level.Name ?? BackupLevelString ?? string.Empty, ID + ((isTrigger ?? false) || patch_LevelData._isRegisteringTriggers ? 10000000 : 0));
+            EntityID = new EntityID(Level.Name ?? string.Empty, ID + ((isTrigger ?? false) || patch_LevelData._isRegisteringTriggers ? 10000000 : 0));
         }
     }
 }

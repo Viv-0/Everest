@@ -601,56 +601,46 @@ namespace Celeste.Mod {
 
                             gen = type.GetMethod(genName, new Type[] { typeof(Level), typeof(LevelData), typeof(Vector2), typeof(EntityData) });
                             if (gen != null && gen.IsStatic && gen.ReturnType.IsCompatible(typeof(Entity))) {
-                                loader = (level, levelData, offset, entityData) => {
-                                    patch_Level.temporaryEntityData = entityData;
-                                    Entity e = (Entity) gen.Invoke(null, new object[] { level, levelData, offset, entityData });
-                                    return e;
-                                };
+                                loader = (level, levelData, offset, entityData) => (Entity) gen.Invoke(null, new object[] { level, levelData, offset, entityData });
                                 // You cannot consistently determine the Type from the Method construction, so you can't map EntityDataName to Type from this method.
-// example: Load(Level level, LevelData levelData, Vector2 offset, EntityData entityData) => entityData.Bool("legacy") ? new ExampleClassOld(entityData, offset) : new ExampleClassNew(entityData, offset);
+                                // example: Load(Level level, LevelData levelData, Vector2 offset, EntityData entityData) => entityData.Bool("legacy") ? new ExampleClassOld(entityData, offset) : new ExampleClassNew(entityData, offset);
                                 goto RegisterEntityLoader;
                             }
 
                             ctor = type.GetConstructor(new Type[] { typeof(EntityData), typeof(Vector2), typeof(EntityID) });
                             if (ctor != null) {
-                                loader = (level, levelData, offset, entityData) => {
-                                    patch_Level.temporaryEntityData = entityData;
-                                    Entity e = (Entity) ctor.Invoke(new object[] { entityData, offset, (entityData as patch_EntityData).EntityID });
-                                    return e;
-                                };
+                                if (typeof(Trigger).IsAssignableFrom(type)) {
+                                    loader = (level, levelData, offset, entityData) => {
+                                        // Because the ID for triggers should be modified in LevelData::CreateEntityData, this means that somehow the EntityData is "unique" from the constructed ones in LevelData
+                                        // This verifies that if the EntityData *isn't* unique, it handles the levelData information. This means that it can have DoNotLoad leaks but this is the maximum we can confirm.
+                                        (level as patch_Level).SetTemporaryEntityData(entityData, levelData, true);
+                                        return (Entity) ctor.Invoke(new object[] { entityData, offset, (entityData as patch_EntityData).EntityID });
+                                        
+                                    };
+                                } else {
+                                    loader = (level, levelData, offset, entityData) => (Entity) ctor.Invoke(new object[] { entityData, offset, (entityData as patch_EntityData).EntityID });
+                                }
                                 TypeHelper.LinkDataNameToType(id, type, false);
                                 goto RegisterEntityLoader;
                             }
 
                             ctor = type.GetConstructor(new Type[] { typeof(EntityData), typeof(Vector2) });
                             if (ctor != null) {
-                                loader = (level, levelData, offset, entityData) => {
-                                    patch_Level.temporaryEntityData = entityData;
-                                    Entity e = (Entity) ctor.Invoke(new object[] { entityData, offset });
-                                    return e;
-                                };
+                                loader = (level, levelData, offset, entityData) => (Entity) ctor.Invoke(new object[] { entityData, offset });
                                 TypeHelper.LinkDataNameToType(id, type, false);
                                 goto RegisterEntityLoader;
                             }
 
                             ctor = type.GetConstructor(new Type[] { typeof(Vector2) });
                             if (ctor != null) {
-                                loader = (level, levelData, offset, entityData) => {
-                                    patch_Level.temporaryEntityData = entityData;
-                                    Entity e = (Entity) ctor.Invoke(new object[] { offset });
-                                    return e;
-                                };
+                                loader = (level, levelData, offset, entityData) => (Entity) ctor.Invoke(new object[] { offset });
                                 TypeHelper.LinkDataNameToType(id, type, false);
                                 goto RegisterEntityLoader;
                             }
 
                             ctor = type.GetConstructor(Type.EmptyTypes);
                             if (ctor != null) {
-                                loader = (level, levelData, offset, entityData) => {
-                                    patch_Level.temporaryEntityData = entityData;
-                                    Entity e = (Entity) ctor.Invoke(Array.Empty<object>());
-                                    return e;
-                                };
+                                loader = (level, levelData, offset, entityData) => (Entity) ctor.Invoke(Array.Empty<object>());
                                 TypeHelper.LinkDataNameToType(id, type, false);
                                 goto RegisterEntityLoader;
                             }

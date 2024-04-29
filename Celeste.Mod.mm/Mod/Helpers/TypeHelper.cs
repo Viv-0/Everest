@@ -333,7 +333,7 @@ namespace Celeste.Mod.Helpers {
                     
             } else if (modName != null) {
                 mod = Everest.Modules.FirstOrDefault(m => m.Metadata.Name == modName);
-                if (mod != null && mod is not NullModule && mod is not LuaModule) {
+                if (mod != null && mod is not NullModule) {
                     Assembly asm = mod.GetType().Assembly;
                     type = asm.GetTypes().FirstOrDefault(t => t.Name == name);
                 }

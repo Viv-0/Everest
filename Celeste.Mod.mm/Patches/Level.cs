@@ -29,10 +29,6 @@ namespace Celeste {
         [MonoModIgnore]
         private enum ConditionBlockModes { }
 
-        // This is used within Level.LoadEntity and Level.orig_LoadLevel so that entityData can be passed to ClutterBlocks being added to the scene.
-        [ThreadStatic]
-        internal static EntityData temporaryEntityData;
-
         // We're effectively in GameLoader, but still need to "expose" private fields to our mod.
         private static EventInstance PauseSnapshot;
         public static EventInstance _PauseSnapshot => PauseSnapshot;
@@ -374,10 +370,11 @@ namespace Celeste {
         public static bool LoadCustomEntity(EntityData entityData, Level level, LevelData levelData = null, Vector2? roomOffset = null) {
             levelData ??= level.Session.LevelData;
             Vector2 offset = roomOffset ?? new Vector2(levelData.Bounds.Left, levelData.Bounds.Top);
-
-            if (Everest.Events.Level.LoadEntity(level, levelData, offset, entityData))
+            /// LoadEntity will *not* handle EntityData, because the solution case is hooking *every* constructor that meets a set of conditions, or severely overcover
+            if (Everest.Events.Level.LoadEntity(level, levelData, offset, entityData)) {
                 return true;
-
+            }
+            (level as patch_Level).SetTemporaryEntityData(entityData);
             if (EntityLoaders.TryGetValue(entityData.Name, out EntityLoader loader)) {
                 Entity loaded = loader(level, levelData, offset, entityData);
                 if (loaded != null) {
@@ -385,7 +382,6 @@ namespace Celeste {
                     return true;
                 }
             }
-
             if (entityData.Name == "everest/spaceController") {
                 level.Add(new SpaceController());
                 return true;
@@ -508,9 +504,9 @@ namespace Celeste {
             }
 
             if (!_LoadStrings.Contains(entityData.Name)) {
-                Logger.Log(LogLevel.Warn, "LoadLevel", $"Failed loading entity {entityData.Name}. Room: {entityData.Level.Name} Position: {entityData.Position}");
+                Logger.Log(LogLevel.Warn, "LoadLevel", $"Failed loading entityData {entityData.Name}. Room: {entityData.Level.Name} Position: {entityData.Position}");
             }
-
+            (level as patch_Level).SetTemporaryEntityData(null);
             return false;
         }
 
@@ -613,10 +609,39 @@ namespace Celeste {
             return errorPresent;
         }
 
-        private bool _IsInDoNotLoadIncreased(LevelData level, EntityData entity) => Session.DoNotLoad.Contains(new EntityID(level.Name, entity.ID + 20000000));
-
+        private bool _IsInDoNotLoadIncreased(LevelData levelData, EntityData entity) {
+            LevelData level = entity.Level ?? levelData ?? Session.LevelData;
+            if (level == null)
+                return false;
+            return Session.DoNotLoad.Contains(new EntityID(level.Name, entity.ID + 20000000));
+        }
         [MonoModIgnore]
         internal extern bool GotCollectables(EntityData data);
+
+
+
+        [ThreadStatic]
+        private static EntityData temporaryEntityData;
+        internal void SetTemporaryEntityData(EntityData entityData, LevelData level = null, bool isTrigger = false) {
+            if(entityData == null) {
+                temporaryEntityData = null;
+                return;
+            }
+            entityData.Level = entityData.Level ?? level ?? Session.LevelData;
+            FixEntityData(entityData, isTrigger); // covers triggers if able and covers "empty" case
+            temporaryEntityData = temporaryEntityData ?? entityData;
+        }
+        internal static EntityData GrabTemporaryEntityData(Entity entity) {
+            EntityData temp = temporaryEntityData;
+            if (entity is Trigger) FixEntityData(temp, true); // Covers late trigger find case
+            return temp;
+        }
+        // This code 
+        internal static void FixEntityData(EntityData entityData, bool trigger) {
+            if ((entityData as patch_EntityData).EntityID.Equals(default(EntityID)) || (trigger && (entityData as patch_EntityData).EntityID.ID == entityData.ID)) {
+                (entityData as patch_EntityData).SetEntityID(trigger);
+            }
+        }
     }
 
     public static class LevelExt {
@@ -631,43 +656,49 @@ namespace Celeste {
             => ((patch_Level) self).SubHudRenderer = value;
 
         /// <summary>
-        /// Loads an Entity into the Level
+        /// Loads an Entity into the Level, ensuring all Everest-handled fields are accounted for.
         /// </summary>
         /// <param name="entity3">the EntityData for the Entity.</param>
         /// <param name="levelData">Optional; the Level (note: room) the entity should be added into. You shouldn't use this unless your entity is global.</param>
         /// <param name="roomOffset">Optional; used for setting the relative position of the entity</param>
         /// <returns>Whether or not the entity successfully loaded</returns>
         public static bool LoadEntity(this Level self, EntityData entity3, LevelData levelData = null, Vector2? roomOffset = null) {
-            patch_Level.temporaryEntityData = entity3;
-            levelData ??= self.Session.LevelData;
-            entity3.Level = levelData;
-            int iD = entity3.ID;
-            EntityID entityID = new EntityID(levelData.Name, iD);
-            if (self.Session.DoNotLoad.Contains(entityID)) {
-                patch_Level.temporaryEntityData = null;
+            patch_EntityData entity = entity3 as patch_EntityData;
+            levelData ??= entity.Level;
+            if (levelData == null) {
+                levelData = entity.Level = self.Session.LevelData;
+                entity.SetEntityID();
+            }
+            if (self.Session.DoNotLoad.Contains(entity.EntityID)) {
                 return false;
-            } else if (patch_Level.LoadCustomEntity(entity3, self, levelData, roomOffset)) {
-                patch_Level.temporaryEntityData = null;
+            } else if (patch_Level.LoadCustomEntity(entity, self, levelData, roomOffset)) {
                 return true;
             } else {
-
                 Vector2 vector = roomOffset ?? new Vector2(levelData.Bounds.Left, levelData.Bounds.Top);
-                switch (entity3.Name) {
+                if (entity.Name == "yellowBlocks" || entity.Name == "redBlocks" || entity.Name == "greenBlocks") {
+                    string pass = entity.Name.Substring(0, entity.Name.IndexOf('B'));
+                    ClutterBlockGenerator.Init(self);
+                    (self as patch_Level).SetTemporaryEntityData(entity);
+                    ClutterBlockGenerator.Add((int) (entity.Position.X / 8f), (int) (entity.Position.Y / 8f), entity.Width / 8, entity.Height / 8, Enum.Parse<ClutterBlock.Colors>(pass, true));
+                    return true;
+                }
+                (self as patch_Level).SetTemporaryEntityData(entity);
+                switch (entity.Name) {
                     case "jumpThru":
-                        self.Add(new JumpthruPlatform(entity3, vector));
+                        self.Add(new JumpthruPlatform(entity, vector));
                         break;
                     case "refill":
-                        self.Add(new Refill(entity3, vector));
+                        self.Add(new Refill(entity, vector));
                         break;
                     case "infiniteStar":
-                        self.Add(new FlyFeather(entity3, vector));
+                        self.Add(new FlyFeather(entity, vector));
                         break;
                     case "strawberry":
-                        self.Add(new Strawberry(entity3, vector, entityID));
+                        self.Add(new Strawberry(entity, vector, entity.EntityID));
                         break;
                     case "memorialTextController":
                         if (self.Session.Dashes == 0 && (self.Session.StartedFromBeginning || (self.Session as patch_Session).RestartedFromGolden)) {
-                            self.Add(new Strawberry(entity3, vector, entityID));
+                            self.Add(new Strawberry(entity, vector, entity.EntityID));
                         }
                         break;
                     case "goldenBerry": {
@@ -676,68 +707,68 @@ namespace Celeste {
                             bool flag5 = SaveData.Instance.UnlockedModes >= 3 || SaveData.Instance.DebugMode;
                             bool completed = (SaveData.Instance as patch_SaveData).Areas_Safe[self.Session.Area.ID].Modes[(int) self.Session.Area.Mode].Completed;
                             if ((cheatMode || (flag5 && completed)) && flag4) {
-                                self.Add(new Strawberry(entity3, vector, entityID));
+                                self.Add(new Strawberry(entity, vector, entity.EntityID));
                             }
                             break;
                         }
                     case "summitgem":
-                        self.Add(new SummitGem(entity3, vector, entityID));
+                        self.Add(new SummitGem(entity, vector, entity.EntityID));
                         break;
                     case "blackGem":
                         if (!self.Session.HeartGem || (self as patch_Level)._PatchHeartGemBehavior(self.Session.Area.Mode) != 0) {
-                            self.Add(new HeartGem(entity3, vector));
+                            self.Add(new HeartGem(entity, vector));
                         }
                         break;
                     case "dreamHeartGem":
                         if (!self.Session.HeartGem) {
-                            self.Add(new DreamHeartGem(entity3, vector));
+                            self.Add(new DreamHeartGem(entity, vector));
                         }
                         break;
                     case "spring":
-                        self.Add(new Spring(entity3, vector, Spring.Orientations.Floor));
+                        self.Add(new Spring(entity, vector, Spring.Orientations.Floor));
                         break;
                     case "wallSpringLeft":
-                        self.Add(new Spring(entity3, vector, Spring.Orientations.WallLeft));
+                        self.Add(new Spring(entity, vector, Spring.Orientations.WallLeft));
                         break;
                     case "wallSpringRight":
-                        self.Add(new Spring(entity3, vector, Spring.Orientations.WallRight));
+                        self.Add(new Spring(entity, vector, Spring.Orientations.WallRight));
                         break;
                     case "fallingBlock":
-                        self.Add(new FallingBlock(entity3, vector));
+                        self.Add(new FallingBlock(entity, vector));
                         break;
                     case "zipMover":
-                        self.Add(new ZipMover(entity3, vector));
+                        self.Add(new ZipMover(entity, vector));
                         break;
                     case "crumbleBlock":
-                        self.Add(new CrumblePlatform(entity3, vector));
+                        self.Add(new CrumblePlatform(entity, vector));
                         break;
                     case "dreamBlock":
-                        self.Add(new DreamBlock(entity3, vector));
+                        self.Add(new DreamBlock(entity, vector));
                         break;
                     case "touchSwitch":
-                        self.Add(new TouchSwitch(entity3, vector));
+                        self.Add(new TouchSwitch(entity, vector));
                         break;
                     case "switchGate":
-                        self.Add(new SwitchGate(entity3, vector));
+                        self.Add(new SwitchGate(entity, vector));
                         break;
                     case "negaBlock":
-                        self.Add(new NegaBlock(entity3, vector));
+                        self.Add(new NegaBlock(entity, vector));
                         break;
                     case "key":
-                        self.Add(new Key(entity3, vector, entityID));
+                        self.Add(new Key(entity, vector, entity.EntityID));
                         break;
                     case "lockBlock":
-                        self.Add(new LockBlock(entity3, vector, entityID));
+                        self.Add(new LockBlock(entity, vector, entity.EntityID));
                         break;
                     case "movingPlatform":
-                        self.Add(new MovingPlatform(entity3, vector));
+                        self.Add(new MovingPlatform(entity, vector));
                         break;
                     case "rotatingPlatforms": {
-                            Vector2 vector2 = entity3.Position + vector;
-                            Vector2 vector3 = entity3.Nodes[0] + vector;
-                            int width = entity3.Width;
-                            int num2 = entity3.Int("platforms");
-                            bool clockwise = entity3.Bool("clockwise");
+                            Vector2 vector2 = entity.Position + vector;
+                            Vector2 vector3 = entity.Nodes[0] + vector;
+                            int width = entity.Width;
+                            int num2 = entity.Int("platforms");
+                            bool clockwise = entity.Bool("clockwise");
                             float length = (vector2 - vector3).Length();
                             float num3 = (vector2 - vector3).Angle();
                             float num4 = (float) Math.PI * 2f / (float) num2;
@@ -750,59 +781,59 @@ namespace Celeste {
                             break;
                         }
                     case "blockField":
-                        self.Add(new BlockField(entity3, vector));
+                        self.Add(new BlockField(entity, vector));
                         break;
                     case "cloud":
-                        self.Add(new Cloud(entity3, vector));
+                        self.Add(new Cloud(entity, vector));
                         break;
                     case "booster":
-                        self.Add(new Booster(entity3, vector));
+                        self.Add(new Booster(entity, vector));
                         break;
                     case "moveBlock":
-                        self.Add(new MoveBlock(entity3, vector));
+                        self.Add(new MoveBlock(entity, vector));
                         break;
                     case "light":
-                        self.Add(new PropLight(entity3, vector));
+                        self.Add(new PropLight(entity, vector));
                         break;
                     case "switchBlock":
                     case "swapBlock":
-                        self.Add(new SwapBlock(entity3, vector));
+                        self.Add(new SwapBlock(entity, vector));
                         break;
                     case "dashSwitchH":
                     case "dashSwitchV":
-                        self.Add(DashSwitch.Create(entity3, vector, entityID));
+                        self.Add(DashSwitch.Create(entity, vector, entity.EntityID));
                         break;
                     case "templeGate":
-                        self.Add(new TempleGate(entity3, vector, levelData.Name));
+                        self.Add(new TempleGate(entity, vector, levelData.Name));
                         break;
                     case "torch":
-                        self.Add(new Torch(entity3, vector, entityID));
+                        self.Add(new Torch(entity, vector, entity.EntityID));
                         break;
                     case "templeCrackedBlock":
-                        self.Add(new TempleCrackedBlock(entityID, entity3, vector));
+                        self.Add(new TempleCrackedBlock(entity.EntityID, entity, vector));
                         break;
                     case "seekerBarrier":
-                        self.Add(new SeekerBarrier(entity3, vector));
+                        self.Add(new SeekerBarrier(entity, vector));
                         break;
                     case "theoCrystal":
-                        self.Add(new TheoCrystal(entity3, vector));
+                        self.Add(new TheoCrystal(entity, vector));
                         break;
                     case "glider":
-                        self.Add(new Glider(entity3, vector));
+                        self.Add(new Glider(entity, vector));
                         break;
                     case "theoCrystalPedestal":
-                        self.Add(new TheoCrystalPedestal(entity3, vector));
+                        self.Add(new TheoCrystalPedestal(entity, vector));
                         break;
                     case "badelineBoost":
-                        self.Add(new BadelineBoost(entity3, vector));
+                        self.Add(new BadelineBoost(entity, vector));
                         break;
                     case "cassette":
                         if (!self.Session.Cassette) {
-                            self.Add(new Cassette(entity3, vector));
+                            self.Add(new Cassette(entity, vector));
                         }
                         break;
                     case "cassetteBlock": {
-                            CassetteBlock cassetteBlock = new CassetteBlock(entity3, vector, entityID);
+                            CassetteBlock cassetteBlock = new CassetteBlock(entity, vector, entity.EntityID);
                             self.Add(cassetteBlock);
                             self.HasCassetteBlocks = true;
                             if (self.CassetteBlockTempo == 1f) {
@@ -815,83 +846,83 @@ namespace Celeste {
                             break;
                         }
                     case "wallBooster":
-                        self.Add(new WallBooster(entity3, vector));
+                        self.Add(new WallBooster(entity, vector));
                         break;
                     case "bounceBlock":
-                        self.Add(new BounceBlock(entity3, vector));
+                        self.Add(new BounceBlock(entity, vector));
                         break;
                     case "coreModeToggle":
-                        self.Add(new CoreModeToggle(entity3, vector));
+                        self.Add(new CoreModeToggle(entity, vector));
                         break;
                     case "iceBlock":
-                        self.Add(new IceBlock(entity3, vector));
+                        self.Add(new IceBlock(entity, vector));
                         break;
                     case "fireBarrier":
-                        self.Add(new FireBarrier(entity3, vector));
+                        self.Add(new FireBarrier(entity, vector));
                         break;
                     case "eyebomb":
-                        self.Add(new Puffer(entity3, vector));
+                        self.Add(new Puffer(entity, vector));
                         break;
                     case "flingBird":
-                        self.Add(new FlingBird(entity3, vector));
+                        self.Add(new FlingBird(entity, vector));
                         break;
                     case "flingBirdIntro":
-                        self.Add(new FlingBirdIntro(entity3, vector));
+                        self.Add(new FlingBirdIntro(entity, vector));
                         break;
                     case "birdPath":
-                        self.Add(new BirdPath(entityID, entity3, vector));
+                        self.Add(new BirdPath(entity.EntityID, entity, vector));
                         break;
                     case "lightningBlock":
-                        self.Add(new LightningBreakerBox(entity3, vector));
+                        self.Add(new LightningBreakerBox(entity, vector));
                         break;
                     case "spikesUp":
-                        self.Add(new Spikes(entity3, vector, Spikes.Directions.Up));
+                        self.Add(new Spikes(entity, vector, Spikes.Directions.Up));
                         break;
                     case "spikesDown":
-                        self.Add(new Spikes(entity3, vector, Spikes.Directions.Down));
+                        self.Add(new Spikes(entity, vector, Spikes.Directions.Down));
                         break;
                     case "spikesLeft":
-                        self.Add(new Spikes(entity3, vector, Spikes.Directions.Left));
+                        self.Add(new Spikes(entity, vector, Spikes.Directions.Left));
                         break;
                     case "spikesRight":
-                        self.Add(new Spikes(entity3, vector, Spikes.Directions.Right));
+                        self.Add(new Spikes(entity, vector, Spikes.Directions.Right));
                         break;
                     case "triggerSpikesUp":
-                        self.Add(new TriggerSpikes(entity3, vector, TriggerSpikes.Directions.Up));
+                        self.Add(new TriggerSpikes(entity, vector, TriggerSpikes.Directions.Up));
                         break;
                     case "triggerSpikesDown":
-                        self.Add(new TriggerSpikes(entity3, vector, TriggerSpikes.Directions.Down));
+                        self.Add(new TriggerSpikes(entity, vector, TriggerSpikes.Directions.Down));
                         break;
                     case "triggerSpikesRight":
-                        self.Add(new TriggerSpikes(entity3, vector, TriggerSpikes.Directions.Right));
+                        self.Add(new TriggerSpikes(entity, vector, TriggerSpikes.Directions.Right));
                         break;
                     case "triggerSpikesLeft":
-                        self.Add(new TriggerSpikes(entity3, vector, TriggerSpikes.Directions.Left));
+                        self.Add(new TriggerSpikes(entity, vector, TriggerSpikes.Directions.Left));
                         break;
                     case "darkChaser":
-                        self.Add(new BadelineOldsite(entity3, vector, self.Tracker.CountEntities<BadelineOldsite>()));
+                        self.Add(new BadelineOldsite(entity, vector, self.Tracker.CountEntities<BadelineOldsite>()));
                         break;
                     case "rotateSpinner":
                         if (self.Session.Area.ID == 10) {
-                            self.Add(new StarRotateSpinner(entity3, vector));
+                            self.Add(new StarRotateSpinner(entity, vector));
                         } else if (self.Session.Area.ID == 3 || (self.Session.Area.ID == 7 && self.Session.Level.StartsWith("d-"))) {
-                            self.Add(new DustRotateSpinner(entity3, vector));
+                            self.Add(new DustRotateSpinner(entity, vector));
                         } else {
-                            self.Add(new BladeRotateSpinner(entity3, vector));
+                            self.Add(new BladeRotateSpinner(entity, vector));
                         }
                         break;
                     case "trackSpinner":
                         if (self.Session.Area.ID == 10) {
-                            self.Add(new StarTrackSpinner(entity3, vector));
+                            self.Add(new StarTrackSpinner(entity, vector));
                         } else if (self.Session.Area.ID == 3 || (self.Session.Area.ID == 7 && self.Session.Level.StartsWith("d-"))) {
-                            self.Add(new DustTrackSpinner(entity3, vector));
+                            self.Add(new DustTrackSpinner(entity, vector));
                         } else {
-                            self.Add(new BladeTrackSpinner(entity3, vector));
+                            self.Add(new BladeTrackSpinner(entity, vector));
                         }
                         break;
                     case "spinner": {
                             if (self.Session.Area.ID == 3 || (self.Session.Area.ID == 7 && self.Session.Level.StartsWith("d-"))) {
-                                self.Add(new DustStaticSpinner(entity3, vector));
+                                self.Add(new DustStaticSpinner(entity, vector));
                                 break;
                             }
                             CrystalColor color = CrystalColor.Blue;
@@ -902,93 +933,93 @@ namespace Celeste {
                             } else if (self.Session.Area.ID == 10) {
                                 color = CrystalColor.Rainbow;
                             }
-                            self.Add(new CrystalStaticSpinner(entity3, vector, color));
+                            self.Add(new CrystalStaticSpinner(entity, vector, color));
                             break;
                         }
                     case "sinkingPlatform":
-                        self.Add(new SinkingPlatform(entity3, vector));
+                        self.Add(new SinkingPlatform(entity, vector));
                         break;
                     case "friendlyGhost":
-                        self.Add(new AngryOshiro(entity3, vector));
+                        self.Add(new AngryOshiro(entity, vector));
                         break;
                     case "seeker":
-                        self.Add(new Seeker(entity3, vector));
+                        self.Add(new Seeker(entity, vector));
                         break;
                     case "seekerStatue":
-                        self.Add(new SeekerStatue(entity3, vector));
+                        self.Add(new SeekerStatue(entity, vector));
                         break;
                     case "slider":
-                        self.Add(new Slider(entity3, vector));
+                        self.Add(new Slider(entity, vector));
                         break;
                     case "templeBigEyeball":
-                        self.Add(new TempleBigEyeball(entity3, vector));
+                        self.Add(new TempleBigEyeball(entity, vector));
                         break;
                     case "crushBlock":
-                        self.Add(new CrushBlock(entity3, vector));
+                        self.Add(new CrushBlock(entity, vector));
                         break;
                     case "bigSpinner":
-                        self.Add(new Bumper(entity3, vector));
+                        self.Add(new Bumper(entity, vector));
                         break;
                     case "starJumpBlock":
-                        self.Add(new StarJumpBlock(entity3, vector));
+                        self.Add(new StarJumpBlock(entity, vector));
                         break;
                     case "floatySpaceBlock":
-                        self.Add(new FloatySpaceBlock(entity3, vector));
+                        self.Add(new FloatySpaceBlock(entity, vector));
                         break;
                     case "glassBlock":
-                        self.Add(new GlassBlock(entity3, vector));
+                        self.Add(new GlassBlock(entity, vector));
                         break;
                     case "goldenBlock":
-                        self.Add(new GoldenBlock(entity3, vector));
+                        self.Add(new GoldenBlock(entity, vector));
                         break;
                     case "fireBall":
-                        self.Add(new FireBall(entity3, vector));
+                        self.Add(new FireBall(entity, vector));
                         break;
                     case "risingLava":
-                        self.Add(new RisingLava(entity3, vector));
+                        self.Add(new RisingLava(entity, vector));
                         break;
                     case "sandwichLava":
-                        self.Add(new SandwichLava(entity3, vector));
+                        self.Add(new SandwichLava(entity, vector));
                         break;
                     case "killbox":
-                        self.Add(new Killbox(entity3, vector));
+                        self.Add(new Killbox(entity, vector));
                         break;
                     case "fakeHeart":
-                        self.Add(new FakeHeart(entity3, vector));
+                        self.Add(new FakeHeart(entity, vector));
                         break;
                     case "lightning":
-                        if (entity3.Bool("perLevel") || !self.Session.GetFlag("disable_lightning")) {
-                            self.Add(new Lightning(entity3, vector));
+                        if (entity.Bool("perLevel") || !self.Session.GetFlag("disable_lightning")) {
+                            self.Add(new Lightning(entity, vector));
                         }
                         break;
                     case "finalBoss":
-                        self.Add(new FinalBoss(entity3, vector));
+                        self.Add(new FinalBoss(entity, vector));
                         break;
                     case "finalBossFallingBlock":
-                        self.Add(FallingBlock.CreateFinalBossBlock(entity3, vector));
+                        self.Add(FallingBlock.CreateFinalBossBlock(entity, vector));
                         break;
                     case "finalBossMovingBlock":
-                        self.Add(new FinalBossMovingBlock(entity3, vector));
+                        self.Add(new FinalBossMovingBlock(entity, vector));
                         break;
                     case "fakeWall":
-                        self.Add(new FakeWall(entityID, entity3, vector, FakeWall.Modes.Wall));
+                        self.Add(new FakeWall(entity.EntityID, entity, vector, FakeWall.Modes.Wall));
                         break;
                     case "fakeBlock":
-                        self.Add(new FakeWall(entityID, entity3, vector, FakeWall.Modes.Block));
+                        self.Add(new FakeWall(entity.EntityID, entity, vector, FakeWall.Modes.Block));
                         break;
                     case "dashBlock":
-                        self.Add(new DashBlock(entity3, vector, entityID));
+                        self.Add(new DashBlock(entity, vector, entity.EntityID));
                         break;
                     case "invisibleBarrier":
-                        self.Add(new InvisibleBarrier(entity3, vector));
+                        self.Add(new InvisibleBarrier(entity, vector));
                         break;
                     case "exitBlock":
-                        self.Add(new ExitBlock(entity3, vector));
+                        self.Add(new ExitBlock(entity, vector));
                         break;
                     case "conditionBlock": {
-                            string conditionBlockModes = entity3.Attr("condition", "Key");
+                            string conditionBlockModes = entity.Attr("condition", "Key");
                             EntityID none = EntityID.None;
-                            string[] array = entity3.Attr("conditionID").Split(':');
+                            string[] array = entity.Attr("conditionID").Split(':');
                             none.Level = array[0];
                             none.ID = Convert.ToInt32(array[1]);
                             if (conditionBlockModes.ToLowerInvariant() switch {
@@ -997,228 +1028,210 @@ namespace Celeste {
                                 "strawberry" => self.Session.Strawberries.Contains(none),
                                 _ => throw new Exception("Condition type not supported!"),
                             }) {
-                                self.Add(new ExitBlock(entity3, vector));
+                                self.Add(new ExitBlock(entity, vector));
                             }
                             break;
                         }
                     case "coverupWall":
-                        self.Add(new CoverupWall(entity3, vector));
+                        self.Add(new CoverupWall(entity, vector));
                         break;
                     case "crumbleWallOnRumble":
-                        self.Add(new CrumbleWallOnRumble(entity3, vector, entityID));
+                        self.Add(new CrumbleWallOnRumble(entity, vector, entity.EntityID));
                         break;
                     case "ridgeGate":
-                        if ((self as patch_Level).GotCollectables(entity3)) {
-                            self.Add(new RidgeGate(entity3, vector));
+                        if ((self as patch_Level).GotCollectables(entity)) {
+                            self.Add(new RidgeGate(entity, vector));
                         }
                         break;
                     case "tentacles":
-                        self.Add(new ReflectionTentacles(entity3, vector));
+                        self.Add(new ReflectionTentacles(entity, vector));
                         break;
                     case "starClimbController":
                         self.Add(new StarJumpController());
                         break;
                     case "playerSeeker":
-                        self.Add(new PlayerSeeker(entity3, vector));
+                        self.Add(new PlayerSeeker(entity, vector));
                         break;
                     case "chaserBarrier":
-                        self.Add(new ChaserBarrier(entity3, vector));
+                        self.Add(new ChaserBarrier(entity, vector));
                         break;
                     case "introCrusher":
-                        self.Add(new IntroCrusher(entity3, vector));
+                        self.Add(new IntroCrusher(entity, vector));
                         break;
                     case "bridge":
-                        self.Add(new Bridge(entity3, vector));
+                        self.Add(new Bridge(entity, vector));
                         break;
                     case "bridgeFixed":
-                        self.Add(new BridgeFixed(entity3, vector));
+                        self.Add(new BridgeFixed(entity, vector));
                         break;
                     case "bird":
-                        self.Add(new BirdNPC(entity3, vector));
+                        self.Add(new BirdNPC(entity, vector));
                         break;
                     case "introCar":
-                        self.Add(new IntroCar(entity3, vector));
+                        self.Add(new IntroCar(entity, vector));
                         break;
                     case "memorial":
-                        self.Add(new Memorial(entity3, vector));
+                        self.Add(new Memorial(entity, vector));
                         break;
                     case "wire":
-                        self.Add(new Wire(entity3, vector));
+                        self.Add(new Wire(entity, vector));
                         break;
                     case "cobweb":
-                        self.Add(new Cobweb(entity3, vector));
+                        self.Add(new Cobweb(entity, vector));
                         break;
                     case "lamp":
-                        self.Add(new Lamp(vector + entity3.Position, entity3.Bool("broken")));
+                        self.Add(new Lamp(vector + entity.Position, entity.Bool("broken")));
                         break;
                     case "hanginglamp":
-                        self.Add(new HangingLamp(entity3, vector + entity3.Position));
+                        self.Add(new HangingLamp(entity, vector + entity.Position));
                         break;
                     case "hahaha":
-                        self.Add(new Hahaha(entity3, vector));
+                        self.Add(new Hahaha(entity, vector));
                         break;
                     case "bonfire":
-                        self.Add(new Bonfire(entity3, vector));
+                        self.Add(new Bonfire(entity, vector));
                         break;
                     case "payphone":
-                        self.Add(new Payphone(vector + entity3.Position));
+                        self.Add(new Payphone(vector + entity.Position));
                         break;
                     case "colorSwitch":
-                        self.Add(new ClutterSwitch(entity3, vector));
+                        self.Add(new ClutterSwitch(entity, vector));
                         break;
                     case "clutterDoor":
-                        self.Add(new ClutterDoor(entity3, vector, self.Session));
+                        self.Add(new ClutterDoor(entity, vector, self.Session));
                         break;
                     case "dreammirror":
-                        self.Add(new DreamMirror(vector + entity3.Position));
+                        self.Add(new DreamMirror(vector + entity.Position));
                         break;
                     case "resortmirror":
-                        self.Add(new ResortMirror(entity3, vector));
+                        self.Add(new ResortMirror(entity, vector));
                         break;
                     case "towerviewer":
-                        self.Add(new Lookout(entity3, vector));
+                        self.Add(new Lookout(entity, vector));
                         break;
                     case "picoconsole":
-                        self.Add(new PicoConsole(entity3, vector));
+                        self.Add(new PicoConsole(entity, vector));
                         break;
                     case "wavedashmachine":
-                        self.Add(new WaveDashTutorialMachine(entity3, vector));
-                        break;
-                    case "yellowBlocks":
-                        ClutterBlockGenerator.Init(self);
-                        patch_Level.temporaryEntityData = entity3;
-                        ClutterBlockGenerator.Add((int) (entity3.Position.X / 8f), (int) (entity3.Position.Y / 8f), entity3.Width / 8, entity3.Height / 8, ClutterBlock.Colors.Yellow);
-                        patch_Level.temporaryEntityData = null;
-                        break;
-                    case "redBlocks":
-                        ClutterBlockGenerator.Init(self);
-                        patch_Level.temporaryEntityData = entity3;
-                        ClutterBlockGenerator.Add((int) (entity3.Position.X / 8f), (int) (entity3.Position.Y / 8f), entity3.Width / 8, entity3.Height / 8, ClutterBlock.Colors.Red);
-                        patch_Level.temporaryEntityData = null;
-                        break;
-                    case "greenBlocks":
-                        ClutterBlockGenerator.Init(self);
-                        patch_Level.temporaryEntityData = entity3;
-                        ClutterBlockGenerator.Add((int) (entity3.Position.X / 8f), (int) (entity3.Position.Y / 8f), entity3.Width / 8, entity3.Height / 8, ClutterBlock.Colors.Green);
-                        patch_Level.temporaryEntityData = null;
+                        self.Add(new WaveDashTutorialMachine(entity, vector));
                         break;
                     case "oshirodoor":
-                        self.Add(new MrOshiroDoor(entity3, vector));
+                        self.Add(new MrOshiroDoor(entity, vector));
                         break;
                     case "templeMirrorPortal":
-                        self.Add(new TempleMirrorPortal(entity3, vector));
+                        self.Add(new TempleMirrorPortal(entity, vector));
                         break;
                     case "reflectionHeartStatue":
-                        self.Add(new ReflectionHeartStatue(entity3, vector));
+                        self.Add(new ReflectionHeartStatue(entity, vector));
                         break;
                     case "resortRoofEnding":
-                        self.Add(new ResortRoofEnding(entity3, vector));
+                        self.Add(new ResortRoofEnding(entity, vector));
                         break;
                     case "gondola":
-                        self.Add(new Gondola(entity3, vector));
+                        self.Add(new Gondola(entity, vector));
                         break;
                     case "birdForsakenCityGem":
-                        self.Add(new ForsakenCitySatellite(entity3, vector));
+                        self.Add(new ForsakenCitySatellite(entity, vector));
                         break;
                     case "whiteblock":
-                        self.Add(new WhiteBlock(entity3, vector));
+                        self.Add(new WhiteBlock(entity, vector));
                         break;
                     case "plateau":
-                        self.Add(new Plateau(entity3, vector));
+                        self.Add(new Plateau(entity, vector));
                         break;
                     case "soundSource":
-                        self.Add(new SoundSourceEntity(entity3, vector));
+                        self.Add(new SoundSourceEntity(entity, vector));
                         break;
                     case "templeMirror":
-                        self.Add(new TempleMirror(entity3, vector));
+                        self.Add(new TempleMirror(entity, vector));
                         break;
                     case "templeEye":
-                        self.Add(new TempleEye(entity3, vector));
+                        self.Add(new TempleEye(entity, vector));
                         break;
                     case "clutterCabinet":
-                        self.Add(new ClutterCabinet(entity3, vector));
+                        self.Add(new ClutterCabinet(entity, vector));
                         break;
                     case "floatingDebris":
-                        self.Add(new FloatingDebris(entity3, vector));
+                        self.Add(new FloatingDebris(entity, vector));
                         break;
                     case "foregroundDebris":
-                        self.Add(new ForegroundDebris(entity3, vector));
+                        self.Add(new ForegroundDebris(entity, vector));
                         break;
                     case "moonCreature":
-                        self.Add(new MoonCreature(entity3, vector));
+                        self.Add(new MoonCreature(entity, vector));
                         break;
                     case "lightbeam":
-                        self.Add(new LightBeam(entity3, vector));
+                        self.Add(new LightBeam(entity, vector));
                         break;
                     case "door":
-                        self.Add(new Door(entity3, vector));
+                        self.Add(new Door(entity, vector));
                         break;
                     case "trapdoor":
-                        self.Add(new Trapdoor(entity3, vector));
+                        self.Add(new Trapdoor(entity, vector));
                         break;
                     case "resortLantern":
-                        self.Add(new ResortLantern(entity3, vector));
+                        self.Add(new ResortLantern(entity, vector));
                         break;
                     case "water":
-                        self.Add(new Water(entity3, vector));
+                        self.Add(new Water(entity, vector));
                         break;
                     case "waterfall":
-                        self.Add(new WaterFall(entity3, vector));
+                        self.Add(new WaterFall(entity, vector));
                         break;
                     case "bigWaterfall":
-                        self.Add(new BigWaterfall(entity3, vector));
+                        self.Add(new BigWaterfall(entity, vector));
                         break;
                     case "clothesline":
-                        self.Add(new Clothesline(entity3, vector));
+                        self.Add(new Clothesline(entity, vector));
                         break;
                     case "cliffflag":
-                        self.Add(new CliffFlags(entity3, vector));
+                        self.Add(new CliffFlags(entity, vector));
                         break;
                     case "cliffside_flag":
-                        self.Add(new CliffsideWindFlag(entity3, vector));
+                        self.Add(new CliffsideWindFlag(entity, vector));
                         break;
                     case "flutterbird":
-                        self.Add(new FlutterBird(entity3, vector));
+                        self.Add(new FlutterBird(entity, vector));
                         break;
                     case "SoundTest3d":
-                        self.Add(new _3dSoundTest(entity3, vector));
+                        self.Add(new _3dSoundTest(entity, vector));
                         break;
                     case "SummitBackgroundManager":
-                        self.Add(new AscendManager(entity3, vector));
+                        self.Add(new AscendManager(entity, vector));
                         break;
                     case "summitGemManager":
-                        self.Add(new SummitGemManager(entity3, vector));
+                        self.Add(new SummitGemManager(entity, vector));
                         break;
                     case "heartGemDoor":
-                        self.Add(new HeartGemDoor(entity3, vector));
+                        self.Add(new HeartGemDoor(entity, vector));
                         break;
                     case "summitcheckpoint":
-                        self.Add(new SummitCheckpoint(entity3, vector));
+                        self.Add(new SummitCheckpoint(entity, vector));
                         break;
                     case "summitcloud":
-                        self.Add(new SummitCloud(entity3, vector));
+                        self.Add(new SummitCloud(entity, vector));
                         break;
                     case "coreMessage":
-                        self.Add(new CoreMessage(entity3, vector));
+                        self.Add(new CoreMessage(entity, vector));
                         break;
                     case "playbackTutorial":
-                        self.Add(new PlayerPlayback(entity3, vector));
+                        self.Add(new PlayerPlayback(entity, vector));
                         break;
                     case "playbackBillboard":
-                        self.Add(new PlaybackBillboard(entity3, vector));
+                        self.Add(new PlaybackBillboard(entity, vector));
                         break;
                     case "cutsceneNode":
-                        self.Add(new CutsceneNode(entity3, vector));
+                        self.Add(new CutsceneNode(entity, vector));
                         break;
                     case "kevins_pc":
-                        self.Add(new KevinsPC(entity3, vector));
+                        self.Add(new KevinsPC(entity, vector));
                         break;
                     case "powerSourceNumber":
-                        self.Add(new PowerSourceNumber(entity3.Position + vector, entity3.Int("number", 1), (self as patch_Level).GotCollectables(entity3)));
+                        self.Add(new PowerSourceNumber(entity.Position + vector, entity.Int("number", 1), (self as patch_Level).GotCollectables(entity)));
                         break;
                     case "npc":
-                        string text = entity3.Attr("npc").ToLower();
-                        Vector2 position = entity3.Position + vector;
+                        string text = entity.Attr("npc").ToLower();
+                        Vector2 position = entity.Position + vector;
                         switch (text) {
                             case "granny_00_house":
                                 self.Add(new NPC00_Granny(position));
@@ -1247,7 +1260,7 @@ namespace Celeste {
                                 self.Add(new NPC03_Oshiro_Hallway2(position));
                                 break;
                             case "oshiro_03_bigroom":
-                                self.Add(new NPC03_Oshiro_Cluttter(entity3, vector));
+                                self.Add(new NPC03_Oshiro_Cluttter(entity, vector));
                                 break;
                             case "oshiro_03_breakdown":
                                 self.Add(new NPC03_Oshiro_Breakdown(position));
@@ -1271,142 +1284,149 @@ namespace Celeste {
                                 self.Add(new NPC05_Theo_Mirror(position));
                                 break;
                             case "evil_05":
-                                self.Add(new NPC05_Badeline(entity3, vector));
+                                self.Add(new NPC05_Badeline(entity, vector));
                                 break;
                             case "theo_06_plateau":
-                                self.Add(new NPC06_Theo_Plateau(entity3, vector));
+                                self.Add(new NPC06_Theo_Plateau(entity, vector));
                                 break;
                             case "granny_06_intro":
-                                self.Add(new NPC06_Granny(entity3, vector));
+                                self.Add(new NPC06_Granny(entity, vector));
                                 break;
                             case "badeline_06_crying":
-                                self.Add(new NPC06_Badeline_Crying(entity3, vector));
+                                self.Add(new NPC06_Badeline_Crying(entity, vector));
                                 break;
                             case "granny_06_ending":
-                                self.Add(new NPC06_Granny_Ending(entity3, vector));
+                                self.Add(new NPC06_Granny_Ending(entity, vector));
                                 break;
                             case "theo_06_ending":
-                                self.Add(new NPC06_Theo_Ending(entity3, vector));
+                                self.Add(new NPC06_Theo_Ending(entity, vector));
                                 break;
                             case "granny_07x":
-                                self.Add(new NPC07X_Granny_Ending(entity3, vector));
+                                self.Add(new NPC07X_Granny_Ending(entity, vector));
                                 break;
                             case "theo_08_inside":
-                                self.Add(new NPC08_Theo(entity3, vector));
+                                self.Add(new NPC08_Theo(entity, vector));
                                 break;
                             case "granny_08_inside":
-                                self.Add(new NPC08_Granny(entity3, vector));
+                                self.Add(new NPC08_Granny(entity, vector));
                                 break;
                             case "granny_09_outside":
-                                self.Add(new NPC09_Granny_Outside(entity3, vector));
+                                self.Add(new NPC09_Granny_Outside(entity, vector));
                                 break;
                             case "granny_09_inside":
-                                self.Add(new NPC09_Granny_Inside(entity3, vector));
+                                self.Add(new NPC09_Granny_Inside(entity, vector));
                                 break;
                             case "gravestone_10":
-                                self.Add(new NPC10_Gravestone(entity3, vector));
+                                self.Add(new NPC10_Gravestone(entity, vector));
                                 break;
                             case "granny_10_never":
-                                self.Add(new NPC07X_Granny_Ending(entity3, vector, ch9EasterEgg: true));
+                                self.Add(new NPC07X_Granny_Ending(entity, vector, ch9EasterEgg: true));
                                 break;
                         }
                         break;
                     case "eventTrigger":
-                        self.Add(new EventTrigger(entity3, vector));
+                        self.Add(new EventTrigger(entity, vector));
                         break;
                     case "musicFadeTrigger":
-                        self.Add(new MusicFadeTrigger(entity3, vector));
+                        self.Add(new MusicFadeTrigger(entity, vector));
                         break;
                     case "musicTrigger":
-                        self.Add(new MusicTrigger(entity3, vector));
+                        self.Add(new MusicTrigger(entity, vector));
                         break;
                     case "altMusicTrigger":
-                        self.Add(new AltMusicTrigger(entity3, vector));
+                        self.Add(new AltMusicTrigger(entity, vector));
                         break;
                     case "cameraOffsetTrigger":
-                        self.Add(new CameraOffsetTrigger(entity3, vector));
+                        self.Add(new CameraOffsetTrigger(entity, vector));
                         break;
                     case "lightFadeTrigger":
-                        self.Add(new LightFadeTrigger(entity3, vector));
+                        self.Add(new LightFadeTrigger(entity, vector));
                         break;
                     case "bloomFadeTrigger":
-                        self.Add(new BloomFadeTrigger(entity3, vector));
+                        if(entity.ID == entity.EntityID.ID)
+                            entity.SetEntityID(true);
+                        self.Add(new BloomFadeTrigger(entity, vector));
                         break;
-                    case "cameraTargetTrigger": {
-                            string text2 = entity3.Attr("deleteFlag");
-                            if (string.IsNullOrEmpty(text2) || !self.Session.GetFlag(text2)) {
-                                self.Add(new CameraTargetTrigger(entity3, vector));
-                            }
-                            break;
+                    case "cameraTargetTrigger":
+                        string text2 = entity.Attr("deleteFlag");
+                        if (string.IsNullOrEmpty(text2) || !self.Session.GetFlag(text2)) {
+                            self.Add(new CameraTargetTrigger(entity, vector));
                         }
+                        break;
                     case "cameraAdvanceTargetTrigger":
-                        self.Add(new CameraAdvanceTargetTrigger(entity3, vector));
+                        self.Add(new CameraAdvanceTargetTrigger(entity, vector));
                         break;
                     case "respawnTargetTrigger":
-                        self.Add(new RespawnTargetTrigger(entity3, vector));
+                        self.Add(new RespawnTargetTrigger(entity, vector));
                         break;
                     case "changeRespawnTrigger":
-                        self.Add(new ChangeRespawnTrigger(entity3, vector));
+                        self.Add(new ChangeRespawnTrigger(entity, vector));
                         break;
                     case "windTrigger":
-                        self.Add(new WindTrigger(entity3, vector));
+                        self.Add(new WindTrigger(entity, vector));
                         break;
                     case "windAttackTrigger":
-                        self.Add(new WindAttackTrigger(entity3, vector));
+                        if(entity.ID == entity.EntityID.ID)
+                            entity.SetEntityID(true);
+                        self.Add(new WindAttackTrigger(entity, vector));
                         break;
                     case "minitextboxTrigger":
-                        self.Add(new MiniTextboxTrigger(entity3, vector, (entity3 as patch_EntityData).EntityID));
+                        if(entity.ID == entity.EntityID.ID)
+                            entity.SetEntityID(true);
+                        self.Add(new MiniTextboxTrigger(entity, vector, entity.EntityID));
                         break;
                     case "oshiroTrigger":
-                        self.Add(new OshiroTrigger(entity3, vector));
+                        self.Add(new OshiroTrigger(entity, vector));
                         break;
                     case "interactTrigger":
-                        self.Add(new InteractTrigger(entity3, vector));
+                        self.Add(new InteractTrigger(entity, vector));
                         break;
                     case "checkpointBlockerTrigger":
-                        self.Add(new CheckpointBlockerTrigger(entity3, vector));
+                        self.Add(new CheckpointBlockerTrigger(entity, vector));
                         break;
                     case "lookoutBlocker":
-                        self.Add(new LookoutBlocker(entity3, vector));
+                        self.Add(new LookoutBlocker(entity, vector));
                         break;
                     case "stopBoostTrigger":
-                        self.Add(new StopBoostTrigger(entity3, vector));
+                        self.Add(new StopBoostTrigger(entity, vector));
                         break;
                     case "noRefillTrigger":
-                        self.Add(new NoRefillTrigger(entity3, vector));
+                        self.Add(new NoRefillTrigger(entity, vector));
                         break;
                     case "ambienceParamTrigger":
-                        self.Add(new AmbienceParamTrigger(entity3, vector));
+                        self.Add(new AmbienceParamTrigger(entity, vector));
                         break;
                     case "creditsTrigger":
-                        self.Add(new CreditsTrigger(entity3, vector));
+                        self.Add(new CreditsTrigger(entity, vector));
                         break;
                     case "goldenBerryCollectTrigger":
-                        self.Add(new GoldBerryCollectTrigger(entity3, vector));
+                        self.Add(new GoldBerryCollectTrigger(entity, vector));
                         break;
                     case "moonGlitchBackgroundTrigger":
-                        self.Add(new MoonGlitchBackgroundTrigger(entity3, vector));
+                        self.Add(new MoonGlitchBackgroundTrigger(entity, vector));
                         break;
                     case "blackholeStrength":
-                        self.Add(new BlackholeStrengthTrigger(entity3, vector));
+                        self.Add(new BlackholeStrengthTrigger(entity, vector));
                         break;
                     case "rumbleTrigger":
-                        self.Add(new RumbleTrigger(entity3, vector, (entity3 as patch_EntityData).EntityID));
+                        self.Add(new RumbleTrigger(entity, vector, entity.EntityID));
                         break;
                     case "birdPathTrigger":
-                        self.Add(new BirdPathTrigger(entity3, vector));
+                        self.Add(new BirdPathTrigger(entity, vector));
                         break;
                     case "spawnFacingTrigger":
-                        self.Add(new SpawnFacingTrigger(entity3, vector));
+                        self.Add(new SpawnFacingTrigger(entity, vector));
                         break;
                     case "detachFollowersTrigger":
-                        self.Add(new DetachStrawberryTrigger(entity3, vector));
+                        self.Add(new DetachStrawberryTrigger(entity, vector));
                         break;
                     default:
+                        (self as patch_Level).SetTemporaryEntityData(null);
                         return false;
 
                 }
-                patch_Level.temporaryEntityData = null;
+                // rare edge case requires a reset to null - i believe it's a thread condition of some kind but I only got it once ever, and this fixes it
+                (self as patch_Level).SetTemporaryEntityData(null);
                 return true;
             }
         }
@@ -1471,11 +1491,9 @@ namespace MonoMod {
             m_LoadStrings_Add.DeclaringType = t_LoadStrings;
             m_LoadStrings_ctor.DeclaringType = t_LoadStrings;
 
-            //FieldReference f_isLoadingTriggers = context.Method.DeclaringType.FindField("_isLoadingTriggers")!;
             MethodReference m_IsInDoNotLoadIncreased = context.Method.DeclaringType.FindMethod("_IsInDoNotLoadIncreased")!;
 
-            VariableDefinition[] vars_entityData = context.Body.Variables.Where(v => v.VariableType.FullName == "Celeste.EntityData").ToArray();
-            FieldDefinition f_Level_temporaryEntityData = context.Method.DeclaringType.FindField("temporaryEntityData");
+            MethodReference m_Level_SetTemporaryEntityData = context.Method.DeclaringType.FindMethod("SetTemporaryEntityData");
 
             ILCursor cursor = new ILCursor(context);
 
@@ -1505,43 +1523,49 @@ namespace MonoMod {
             cursor.Index = 0;
             // Code change:
             //   foreach (EntityData entity3 in levelData.Entities) {
-            // +    Level.temporaryEntityData = entity3;                    This will always be changed at the start of each loop, so i just need to set it to null after the loop.
+            // +    level.SetTemporaryEntityData(entity3, levelData, isTrigger: false);    This will always be changed at the start of each loop, so i just need to set it to null after the loop.
             //      int iD = entity3.ID;
-            //      EntityID entityID = new EntityID(levelData.Name, iD);   Should maybe be removed, but I don't want to break mod parity
-            // +    entityID = entity3.EntityID;                            ID offset is managed in LevelData.CreateEntityData
+            //      EntityID entityID = new EntityID(levelData.Name, iD);                   Kept for mod parity
+            // +    entityID = entity3.EntityID;                                            ID offset is managed in LevelData.CreateEntityData and verified with FixEntityData in SetTemporaryEntityData
             //      ..., switch(...) { cases ... }
-            //   }
-            // + Level.temporaryEntityData = null;                          Setting it to null after the loop
+            //   } 
+            // + level.SetTemporaryEntityData(null, null, false);                           since we don't null at the end of the switch statement, we need to null here
             //   ClutterBlockGenerator.Generate();
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchLdloc(17)); // entity3
+            cursor.Emit(OpCodes.Ldarg_0);
             cursor.Emit(OpCodes.Ldloc, 17); // entity3
-            cursor.Emit(OpCodes.Stsfld, f_Level_temporaryEntityData);
+            cursor.Emit(OpCodes.Ldloc, 3); // levelData
+            cursor.Emit(OpCodes.Ldc_I4_0); // `false`
+            cursor.Emit(OpCodes.Call, m_Level_SetTemporaryEntityData); // level.SetTemporaryEntityData(entity3, levelData, false);
             cursor.GotoNext(MoveType.Before, instr => instr.MatchLdarg(0));
             cursor.Emit(OpCodes.Ldloc, 17); // entity3
             cursor.Emit(OpCodes.Ldfld, f_EntityData_EntityID); // entity3.EntityID
-            cursor.Emit(OpCodes.Stloc, 19); // entityID
+            cursor.Emit(OpCodes.Stloc, 19); // entityID = entity3.EntityID;
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchCall("Celeste.ClutterBlockGenerator", "Generate"));
+            cursor.Emit(OpCodes.Ldarg_0);
             cursor.Emit(OpCodes.Ldnull);
-            cursor.Emit(OpCodes.Stsfld, f_Level_temporaryEntityData);
+            cursor.Emit(OpCodes.Dup);
+            cursor.Emit(OpCodes.Ldc_I4_0);
+            cursor.Emit(OpCodes.Call, m_Level_SetTemporaryEntityData);
             // Code change:
             //   foreach (EntityData trigger in levelData.Triggers) {
-            // +    Level.temporaryEntityData = trigger;                            This will always be changed at the start of each loop, so i just need to set it to null after the loop.
+            // +    level.SetTemporaryEntityData(entity3, levelData, isTrigger: true);  This will always be changed at the start of each loop, so i just need to set it to null after the loop.
             //      int entityID2 = trigger.ID;
-            //      EntityID entityID3 = new EntityID(levelData.Name, entityID2);   Should maybe be removed, but I don't want to break mod parity
-            // +    entityID = trigger.EntityID;                                    ID offset is managed in LevelData.CreateEntityData
+            //      EntityID entityID3 = new EntityID(levelData.Name, entityID2);       Kept for mod parity
+            // +    entityID = trigger.EntityID;                                        ID offset is managed in LevelData.CreateEntityData and verified with FixEntityData in SetTemporaryEntityData
             //      ..., switch(...) { cases ... }
             //   }
-            // + Level.temporaryEntityData = null;                                  Setting it to null after the loop, requires HandlerException resolution
+            // + level.SetTemporaryEntityData(null, null, false);                       ince we don't null at the end of the switch statement, we need to null here. Requires HandlerException resolution
             //   foreach (DecalData fgDecal in levelData.FgDecals) ...
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchLdloc(46)); // trigger
             cursor.Emit(OpCodes.Ldloc, 46); // trigger
-            cursor.Emit(OpCodes.Stsfld, f_Level_temporaryEntityData);
-            cursor.GotoNext(MoveType.After, instr => instr.MatchLdarg(0));
+            cursor.Emit(OpCodes.Ldloc, 3); // levelData
+            cursor.Emit(OpCodes.Ldc_I4_1); // `true`
+            cursor.Emit(OpCodes.Call, m_Level_SetTemporaryEntityData); // level.SetTemporaryEntityData(trigger, levelData, isTrigger: true);
+            cursor.GotoNext(MoveType.Before, instr => instr.MatchLdarg(0));
             cursor.Emit(OpCodes.Ldloc, 46); // trigger
             cursor.Emit(OpCodes.Ldfld, f_EntityData_EntityID); // trigger.EntityID
-            cursor.Emit(OpCodes.Stloc, 48); // entityID
-
-            Console.WriteLine("Trigger EntityID hook validated");
+            cursor.Emit(OpCodes.Stloc, 48); // entityID = trigger.EntityID;
 
             ILLabel continueLabel = null;
             cursor.GotoNext(MoveType.After, instr => instr.MatchBrtrue(out continueLabel));
@@ -1554,20 +1578,20 @@ namespace MonoMod {
             cursor.EmitCall(m_IsInDoNotLoadIncreased);
             cursor.EmitBrtrue(continueLabel);
 
-            Console.WriteLine("_IsInDoNotLoadIncreased");
-
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchLdloc(out _), instr => instr.MatchLdfld("Celeste.LevelData", "FgDecals"));
             Instruction oldFinallyEnd = cursor.Next;
-            // set _isLoadingTriggers to false
-            cursor.EmitLdnull();
+            // insert level.SetTemporaryEntityData(null, null, false); after loop
+            cursor.Emit(OpCodes.Ldarg_0); // level
             Instruction newFinallyEnd = cursor.Prev;
-            cursor.EmitStsfld(f_Level_temporaryEntityData);
+            cursor.Emit(OpCodes.Ldnull); // level, null
+            cursor.Emit(OpCodes.Dup);    // level, null, null
+            cursor.Emit(OpCodes.Ldc_I4_0); // level, null, null, false
+            cursor.Emit(OpCodes.Call, m_Level_SetTemporaryEntityData); // level.SetTemporaryEntityData(null, null, false);
             // fix end of finally block
             foreach (ExceptionHandler handler in context.Body.ExceptionHandlers.Where(handler => handler.HandlerEnd == oldFinallyEnd)) {
                 handler.HandlerEnd = newFinallyEnd;
                 break;
             }
-            Console.WriteLine("all edits validated");
 
             // Reset to apply entity patches
             cursor.Index = 0;
