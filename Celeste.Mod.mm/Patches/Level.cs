@@ -248,6 +248,10 @@ namespace Celeste {
                 playerIntro = introType;
 
             try {
+                if (string.IsNullOrEmpty(Session.Level)) {
+                    patch_LevelEnter.ErrorMessage = Dialog.Get("postcard_levelnorooms");
+                    throw new NullReferenceException("Current map has no rooms.");
+                }
                 Logger.Log(LogLevel.Verbose, "LoadLevel", $"Loading room {Session.LevelData.Name} of {Session.Area.GetSID()}");
 
                 orig_LoadLevel(playerIntro, isFromLoader);
@@ -267,6 +271,8 @@ namespace Celeste {
 
                     Pause();
                 }
+                
+                CameraUpwardMaxY = Camera.Y + 180f; // prevent badeline orb camera lock data persisting through screen transitions
             } catch (Exception e) {
                 if (patch_LevelEnter.ErrorMessage == null) {
                     if (e is ArgumentOutOfRangeException && e.MethodInStacktrace(typeof(Level), "get_DefaultSpawnPoint")) {

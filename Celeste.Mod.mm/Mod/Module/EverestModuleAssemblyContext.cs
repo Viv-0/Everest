@@ -139,6 +139,13 @@ namespace Celeste.Mod {
             Unload();
         }
 
+        internal void PostBootCleanup() {
+            // Clear the assembly resolves caches
+            // They are primarily used by the relinker, and as such not needed anymore once the game is running
+            _AssemblyResolveCache.Clear();
+            _LocalResolveCache.Clear(); 
+        }
+
         /// <summary>
         /// Tries to load an assembly from a given path inside the mod.
         /// This path is an absolute path if the the mod was loaded from a directory, or a path into the mod ZIP otherwise.
