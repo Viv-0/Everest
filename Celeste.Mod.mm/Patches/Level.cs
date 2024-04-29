@@ -639,7 +639,7 @@ namespace Celeste {
         }
         internal static EntityData GrabTemporaryEntityData(Entity entity) {
             EntityData temp = temporaryEntityData;
-            if (entity is Trigger) FixEntityData(temp, true); // Covers late trigger find case
+            if (temp != null && entity is Trigger) FixEntityData(temp, true); // Covers late trigger find case
             return temp;
         }
         // This code 
@@ -1535,7 +1535,7 @@ namespace MonoMod {
             // +    entityID = entity3.EntityID;                                            ID offset is managed in LevelData.CreateEntityData and verified with FixEntityData in SetTemporaryEntityData
             //      ..., switch(...) { cases ... }
             //   } 
-            // + level.SetTemporaryEntityData(null, null, false);                           since we don't null at the end of the switch statement, we need to null here
+            // + level.SetTemporaryEntityData(null, null, false);                           since we don't null at the end of the switch statement, we need to null here. Requires HandlerException resolution
             //   ClutterBlockGenerator.Generate();
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchLdloc(17)); // entity3
             cursor.Emit(OpCodes.Ldarg_0);
@@ -1548,11 +1548,19 @@ namespace MonoMod {
             cursor.Emit(OpCodes.Ldfld, f_EntityData_EntityID); // entity3.EntityID
             cursor.Emit(OpCodes.Stloc, 19); // entityID = entity3.EntityID;
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchCall("Celeste.ClutterBlockGenerator", "Generate"));
-            cursor.Emit(OpCodes.Ldarg_0);
-            cursor.Emit(OpCodes.Ldnull);
-            cursor.Emit(OpCodes.Dup);
-            cursor.Emit(OpCodes.Ldc_I4_0);
-            cursor.Emit(OpCodes.Call, m_Level_SetTemporaryEntityData);
+            Instruction oldFinallyEnd = cursor.Next;
+            // insert level.SetTemporaryEntityData(null, null, false); after loop
+            cursor.Emit(OpCodes.Ldarg_0); // level
+            Instruction newFinallyEnd = cursor.Prev;
+            cursor.Emit(OpCodes.Ldnull); // level, null
+            cursor.Emit(OpCodes.Dup);    // level, null, null
+            cursor.Emit(OpCodes.Ldc_I4_0); // level, null, null, false
+            cursor.Emit(OpCodes.Call, m_Level_SetTemporaryEntityData); // level.SetTemporaryEntityData(null, null, false);
+            // fix end of finally block
+            foreach (ExceptionHandler handler in context.Body.ExceptionHandlers.Where(handler => handler.HandlerEnd == oldFinallyEnd)) {
+                handler.HandlerEnd = newFinallyEnd;
+                break;
+            }
             // Code change:
             //   foreach (EntityData trigger in levelData.Triggers) {
             // +    level.SetTemporaryEntityData(entity3, levelData, isTrigger: true);  This will always be changed at the start of each loop, so i just need to set it to null after the loop.
@@ -1564,6 +1572,7 @@ namespace MonoMod {
             // + level.SetTemporaryEntityData(null, null, false);                       ince we don't null at the end of the switch statement, we need to null here. Requires HandlerException resolution
             //   foreach (DecalData fgDecal in levelData.FgDecals) ...
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchLdloc(46)); // trigger
+            cursor.Emit(OpCodes.Ldarg_0);
             cursor.Emit(OpCodes.Ldloc, 46); // trigger
             cursor.Emit(OpCodes.Ldloc, 3); // levelData
             cursor.Emit(OpCodes.Ldc_I4_1); // `true`
@@ -1585,10 +1594,10 @@ namespace MonoMod {
             cursor.EmitBrtrue(continueLabel);
 
             cursor.GotoNext(MoveType.AfterLabel, instr => instr.MatchLdloc(out _), instr => instr.MatchLdfld("Celeste.LevelData", "FgDecals"));
-            Instruction oldFinallyEnd = cursor.Next;
+            oldFinallyEnd = cursor.Next;
             // insert level.SetTemporaryEntityData(null, null, false); after loop
             cursor.Emit(OpCodes.Ldarg_0); // level
-            Instruction newFinallyEnd = cursor.Prev;
+            newFinallyEnd = cursor.Prev;
             cursor.Emit(OpCodes.Ldnull); // level, null
             cursor.Emit(OpCodes.Dup);    // level, null, null
             cursor.Emit(OpCodes.Ldc_I4_0); // level, null, null, false
