@@ -640,6 +640,7 @@ namespace Celeste {
         internal static EntityData GrabTemporaryEntityData(Entity entity) {
             EntityData temp = temporaryEntityData;
             if (temp != null && entity is Trigger) FixEntityData(temp, true); // Covers late trigger find case
+            temporaryEntityData = null;
             return temp;
         }
         // This code 
