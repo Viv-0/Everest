@@ -28,7 +28,7 @@ namespace Monocle {
             private set;
         }
 
-        public readonly EntityData EntityData;
+        public EntityData EntityData;
         public EntityID EntityID => (EntityData as patch_EntityData).EntityID;
         public event Action<Entity> PreUpdate;
         public event Action<Entity> PostUpdate;

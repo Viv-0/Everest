@@ -601,7 +601,12 @@ namespace Celeste.Mod {
 
                             gen = type.GetMethod(genName, new Type[] { typeof(Level), typeof(LevelData), typeof(Vector2), typeof(EntityData) });
                             if (gen != null && gen.IsStatic && gen.ReturnType.IsCompatible(typeof(Entity))) {
-                                loader = (level, levelData, offset, entityData) => (Entity) gen.Invoke(null, new object[] { level, levelData, offset, entityData });
+                                loader = (level, levelData, offset, entityData) => {
+                                    (level as patch_Level).SetTemporaryEntityData(null);
+                                    patch_Entity ret = (patch_Entity) gen.Invoke(null, new object[] { level, levelData, offset, entityData });
+                                    if(ret != null) ret.EntityData = entityData; // This is really unfortunate because this *needs* to happen late for this specific case for these segment to work.
+                                    return ret;
+                                };
                                 // You cannot consistently determine the Type from the Method construction, so you can't map EntityDataName to Type from this method.
                                 // example: Load(Level level, LevelData levelData, Vector2 offset, EntityData entityData) => entityData.Bool("legacy") ? new ExampleClassOld(entityData, offset) : new ExampleClassNew(entityData, offset);
                                 goto RegisterEntityLoader;
