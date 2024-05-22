@@ -1,5 +1,9 @@
 using Mono.Cecil;
+using Mono.Cecil.Cil;
+using Monocle;
+using MonoMod.Cil;
 using MonoMod.InlineRT;
+using MonoMod.Utils;
 using System;
 
 namespace MonoMod {
@@ -10,6 +14,12 @@ namespace MonoMod {
     public class RelinkLegacyMonoMod : Attribute {
         public RelinkLegacyMonoMod(string linkFromName) {}
     }
+
+    /// <summary>
+    /// Patches the FireBall::Added method to attach the EntityData to all FireBalls in the "group," since they're all kinda from the same EntityData, it's just that 1 creates the rest.
+    /// </summary>
+    [MonoModCustomMethodAttribute(nameof(MonoModRules.PatchModSpawnEntityData))]
+    class PatchModSpawnEntityDataAttribute : Attribute { }
 
     static partial class MonoModRules {
 
@@ -37,6 +47,18 @@ namespace MonoMod {
                 isLegacyMonoMod = false;
 
             MonoModRule.Flag.Set("LegacyMonoMod", isLegacyMonoMod);
+        }
+
+        // in practice, people wanting to spawn extensions could use the new LevelExt method (scene as Level).Add(Entity e, EntityData d);
+        public static void PatchModSpawnEntityData(ILContext context, CustomAttribute attrib) {
+            FieldReference f_Entity_EntityData = MonoModRule.Modder.Module.GetType("Monocle.Entity").FindField("EntityData");
+            ILCursor cursor = new ILCursor(context);
+
+            cursor.GotoNext(MoveType.Before, i => i.MatchCall<Scene>("Add"));
+            cursor.Emit(OpCodes.Dup);
+            cursor.Emit(OpCodes.Ldarg_0);
+            cursor.Emit(OpCodes.Ldfld, f_Entity_EntityData);
+            cursor.Emit(OpCodes.Stfld, f_Entity_EntityData);
         }
     }
 }

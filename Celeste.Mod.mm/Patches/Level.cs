@@ -1,7 +1,6 @@
 #pragma warning disable CS0626 // Method, operator, or accessor is marked external and has no attributes on it
 #pragma warning disable CS0649 // Field is never assigned to, and will always have its default value
 
-using Celeste;
 using Celeste.Mod;
 using Celeste.Mod.Core;
 using Celeste.Mod.Entities;
@@ -360,6 +359,11 @@ namespace Celeste {
             return LoadNewPlayer(position, spriteMode);
 #pragma warning restore 0618
         }
+        private static bool _LoadCustomEntity(EntityData entityData, Level level, bool isTrigger) {
+            bool @return = LoadCustomEntity(entityData, level);
+            (level as patch_Level).SetTemporaryEntityData(entityData, null, isTrigger);
+            return @return;
+        }
       
         public static bool LoadCustomEntity(EntityData entityData, Level level) => LoadCustomEntity(entityData, level, null, null);
 
@@ -380,14 +384,15 @@ namespace Celeste {
             if (Everest.Events.Level.LoadEntity(level, levelData, offset, entityData)) {
                 return true;
             }
-            (level as patch_Level).SetTemporaryEntityData(entityData);
             if (EntityLoaders.TryGetValue(entityData.Name, out EntityLoader loader)) {
                 Entity loaded = loader(level, levelData, offset, entityData);
                 if (loaded != null) {
+                    (loaded as patch_Entity).EntityData = entityData;
                     level.Add(loaded);
                     return true;
                 }
             }
+            (level as patch_Level).SetTemporaryEntityData(entityData);
             if (entityData.Name == "everest/spaceController") {
                 level.Add(new SpaceController());
                 return true;
@@ -632,7 +637,8 @@ namespace Celeste {
             if(entityData == null) {
                 temporaryEntityData = null;
                 return;
-            }
+            } 
+            else if (temporaryEntityData != null) return;
             entityData.Level = entityData.Level ?? level ?? Session.LevelData;
             FixEntityData(entityData, isTrigger); // covers triggers if able and covers "empty" case
             temporaryEntityData = temporaryEntityData ?? entityData;
@@ -661,6 +667,11 @@ namespace Celeste {
         [Obsolete("Use Level.SubHudRenderer instead.")]
         public static void SetSubHudRenderer(this Level self, SubHudRenderer value)
             => ((patch_Level) self).SubHudRenderer = value;
+
+        public static void Add(this Level level, Entity entity, EntityData entityData) {
+            (entity as patch_Entity).EntityData = entityData;
+            level.Add(entity);
+        }
 
         /// <summary>
         /// Loads an Entity into the Level, ensuring all Everest-handled fields are accounted for.
@@ -783,6 +794,7 @@ namespace Celeste {
                                 float angleRadians = num3 + num4 * (float) j;
                                 angleRadians = Calc.WrapAngle(angleRadians);
                                 Vector2 position2 = vector3 + Calc.AngleToVector(angleRadians, length);
+                                (self as patch_Level).SetTemporaryEntityData(entity);
                                 self.Add(new RotatingPlatform(position2, width, vector3, clockwise));
                             }
                             break;
@@ -1432,7 +1444,7 @@ namespace Celeste {
                         return false;
 
                 }
-                // rare edge case requires a reset to null - i believe it's a thread condition of some kind but I only got it once ever, and this fixes it
+                // rare edge case requires a reset to null - i believe it's a thread race condition of some kind but I only got it once ever, and this fixes it
                 (self as patch_Level).SetTemporaryEntityData(null);
                 return true;
             }
@@ -1484,7 +1496,7 @@ namespace MonoMod {
             FieldReference f_Session_RestartedFromGolden = f_Session.FieldType.Resolve().FindField("RestartedFromGolden");
             MethodDefinition m_cctor = context.Method.DeclaringType.FindMethod(".cctor");
             MethodDefinition m_LoadNewPlayer = context.Method.DeclaringType.FindMethod("Celeste.Player LoadNewPlayerForLevel(Microsoft.Xna.Framework.Vector2,Celeste.PlayerSpriteMode,Celeste.Level)");
-            MethodDefinition m_LoadCustomEntity = context.Method.DeclaringType.FindMethod("System.Boolean LoadCustomEntity(Celeste.EntityData,Celeste.Level)");
+            MethodDefinition m_LoadCustomEntity = context.Method.DeclaringType.FindMethod("System.Boolean _LoadCustomEntity(Celeste.EntityData,Celeste.Level,System.Boolean)");
             MethodDefinition m_PatchHeartGemBehavior = context.Method.DeclaringType.FindMethod("Celeste.AreaMode _PatchHeartGemBehavior(Celeste.AreaMode)");
 
             // These are used for the static constructor patch
@@ -1506,7 +1518,7 @@ namespace MonoMod {
 
             // Insert our custom entity loader and use it for levelData.Entities and levelData.Triggers
             //  Before: string name = entityData.Name;
-            //  After:  string name = (!Level.LoadCustomEntity(entityData2, this)) ? entityData2.Name : "";
+            //  After:  string name = (!Level._LoadCustomEntity(entityData2, this)) ? entityData2.Name : "";
             int nameLoc = -1;
             for (int i = 0; i < 2; i++) {
                 cursor.GotoNext(
@@ -1516,6 +1528,7 @@ namespace MonoMod {
                     instr => instr.MatchCall("<PrivateImplementationDetails>", "System.UInt32 ComputeStringHash(System.String)"));
                 cursor.Emit(OpCodes.Dup);
                 cursor.Emit(OpCodes.Ldarg_0);
+                cursor.Emit(OpCodes.Ldc_I4, i); // on the first call, emits 0 (false) for Entities; on the second call, emits 1 (true) for Triggers
                 cursor.Emit(OpCodes.Call, m_LoadCustomEntity);
                 cursor.Emit(OpCodes.Brfalse_S, cursor.Next); // False -> custom entity not loaded, so use the vanilla handler
                 cursor.Emit(OpCodes.Pop);

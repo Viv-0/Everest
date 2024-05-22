@@ -1,8 +1,14 @@
 ﻿#pragma warning disable CS0649 // Field is never assigned to, and will always have its default value
 
 using Microsoft.Xna.Framework;
+using Mono.Cecil;
+using Mono.Cecil.Cil;
 using Monocle;
 using MonoMod;
+using MonoMod.Cil;
+using MonoMod.InlineRT;
+using MonoMod.Utils;
+using System;
 
 namespace Celeste {
     class patch_FireBall : FireBall {
@@ -14,6 +20,10 @@ namespace Celeste {
             : base(nodes, amount, index, offset, speedMult, notCoreMode) {
             // no-op. MonoMod ignores this - we only need this to make the compiler shut up.
         }
+
+        [MonoModIgnore]
+        [PatchModSpawnEntityData] // handled in MonoModRules.Mod.cs
+        public override extern void Added(Scene scene);
 
         [MonoModReplace]
         private Vector2 GetPercentPosition(float percent) {
@@ -39,6 +49,5 @@ namespace Celeste {
             float lerp = Calc.ClampedMap(percent, min, max, 0f, 1f);
             return Vector2.Lerp(nodes[i], nodes[i + 1], lerp);
         }
-
     }
 }
