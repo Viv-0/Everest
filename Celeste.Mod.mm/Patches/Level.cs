@@ -270,8 +270,10 @@ namespace Celeste {
 
                     Pause();
                 }
-                
-                CameraUpwardMaxY = Camera.Y + 180f; // prevent badeline orb camera lock data persisting through screen transitions
+
+                if (Session.Area.GetLevelSet() != "Celeste") {
+                    CameraUpwardMaxY = Camera.Y + 180f; // prevent badeline orb camera lock data persisting through screen transitions
+                }
             } catch (Exception e) {
                 if (patch_LevelEnter.ErrorMessage == null) {
                     if (e is ArgumentOutOfRangeException && e.MethodInStacktrace(typeof(Level), "get_DefaultSpawnPoint")) {
@@ -1460,7 +1462,7 @@ namespace MonoMod {
     class PatchLevelLoaderAttribute : Attribute { }
 
     /// <summary>
-    /// Patch level loading method to copy decal rotation and color from <see cref="Celeste.DecalData" /> instances into newly created <see cref="Celeste.Decal" /> entities.
+    /// Patch level loading method to copy decal rotation, color, and depth from <see cref="Celeste.DecalData" /> instances into newly created <see cref="Celeste.Decal" /> entities.
     /// </summary>
     [MonoModCustomMethodAttribute(nameof(MonoModRules.PatchLevelLoaderDecalCreation))]
     class PatchLevelLoaderDecalCreationAttribute : Attribute { }
@@ -1686,6 +1688,12 @@ namespace MonoMod {
 
             FieldDefinition f_DecalData_Rotation = t_DecalData.FindField("Rotation");
             FieldDefinition f_DecalData_ColorHex = t_DecalData.FindField("ColorHex");
+            FieldDefinition f_DecalData_Depth    = t_DecalData.FindField("Depth");
+
+            FieldDefinition f_Decal_DepthSetByPlacement = t_Decal.FindField("DepthSetByPlacement");
+
+            MethodDefinition m_DecalData_HasDepth = t_DecalData.FindMethod("HasDepth");
+            MethodDefinition m_DecalData_GetDepth = t_DecalData.FindMethod("GetDepth");
 
             MethodDefinition m_Decal_ctor = t_Decal.FindMethod("System.Void .ctor(System.String,Microsoft.Xna.Framework.Vector2,Microsoft.Xna.Framework.Vector2,System.Int32,System.Single,System.String)");
 
@@ -1699,14 +1707,32 @@ namespace MonoMod {
                                       instr => instr.MatchLdfld("Celeste.DecalData", "Scale"),
                                       instr => instr.MatchLdcI4(Celeste.Depths.FGDecals)
                                             || instr.MatchLdcI4(Celeste.Depths.BGDecals))) {
-                // load the rotation from the DecalData
+                // load the depth from the DecalData, with the Celeste.Depths.??Decals value as a default
+                cursor.Index--;
+                cursor.Emit(OpCodes.Ldloc_S, (byte) loc_decaldata);
+                cursor.Index++;
+                cursor.Emit(OpCodes.Call, m_DecalData_GetDepth);
+
+                // load the rotation and color from the DecalData
                 cursor.Emit(OpCodes.Ldloc_S, (byte) loc_decaldata);
                 cursor.Emit(OpCodes.Ldfld, f_DecalData_Rotation);
                 cursor.Emit(OpCodes.Ldloc_S, (byte) loc_decaldata);
                 cursor.Emit(OpCodes.Ldfld, f_DecalData_ColorHex);
+
                 // and replace the Decal constructor to accept it
                 cursor.Emit(OpCodes.Newobj, m_Decal_ctor);
                 cursor.Remove();
+
+                // if the depth was set in the DecalData...
+                ILLabel after_set = cursor.DefineLabel();
+                cursor.Emit(OpCodes.Ldloc_S, (byte) loc_decaldata);
+                cursor.Emit(OpCodes.Call, m_DecalData_HasDepth);
+                cursor.Emit(OpCodes.Brfalse_S, after_set);
+                // store that information in the Decal
+                cursor.Emit(OpCodes.Dup);
+                cursor.Emit(OpCodes.Ldc_I4_1);
+                cursor.Emit(OpCodes.Stfld, f_Decal_DepthSetByPlacement);
+                cursor.MarkLabel(after_set);
 
                 matches++;
             }
