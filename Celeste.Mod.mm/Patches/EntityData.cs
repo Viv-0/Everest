@@ -1,6 +1,8 @@
 ﻿#pragma warning disable CS0626 // Method, operator, or accessor is marked external and has no attributes on it
 
 
+using Celeste.Mod;
+
 namespace Celeste {
     class patch_EntityData : EntityData {
         /// <origdoc/>
@@ -15,7 +17,15 @@ namespace Celeste {
         public EntityID EntityID;
 
         internal void InitializeEntityID() {
-            EntityID = new EntityID(Level.Name ?? string.Empty, ID + (patch_LevelData._isRegisteringTriggers ? 10000000 : 0));
+            int id = ID + (patch_LevelData._isRegisteringTriggers ? 10000000 : 0);
+            if (Level == null) {
+                Logger.Log(LogLevel.Error, "Everest", "Level was found to be null after Level set in EntityData!");
+                EntityID = new EntityID(EntityID.None.Level, id);
+            }
+            else if (string.IsNullOrWhiteSpace(Level.Name))
+                EntityID = new EntityID(EntityID.None.Level, id);
+            else
+                EntityID = new EntityID(Level?.Name ?? EntityID.None.Level, id);            
         }
 
     }
