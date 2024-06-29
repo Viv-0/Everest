@@ -56,7 +56,7 @@ namespace Celeste {
                     {
                         case "id":
                             entityData.ID = (int) value;
-                            entityData.InitializeEntityID(); // creates EntityID based on Level Name rather than current Level in LoadLevel.
+                            entityData.InitializeEntityID(Name); // creates EntityID based on Level Name rather than current Level in LoadLevel.
                             break;
                         case "x":
                             entityData.Position.X = Convert.ToSingle(value, CultureInfo.InvariantCulture);

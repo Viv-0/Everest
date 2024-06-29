@@ -16,17 +16,7 @@ namespace Celeste {
 
         public EntityID EntityID;
 
-        internal void InitializeEntityID() {
-            int id = ID + (patch_LevelData._isRegisteringTriggers ? 10000000 : 0);
-            if (Level == null) {
-                Logger.Log(LogLevel.Error, "Everest", "Level was found to be null after Level set in EntityData!");
-                EntityID = new EntityID(EntityID.None.Level, id);
-            }
-            else if (string.IsNullOrWhiteSpace(Level.Name))
-                EntityID = new EntityID(EntityID.None.Level, id);
-            else
-                EntityID = new EntityID(Level?.Name ?? EntityID.None.Level, id);            
-        }
+        internal void InitializeEntityID(string LevelName) => new EntityID(string.IsNullOrWhiteSpace(LevelName) ? EntityID.None.Level : LevelName, ID + (patch_LevelData._isRegisteringTriggers ? 10000000 : 0));
 
     }
 }
