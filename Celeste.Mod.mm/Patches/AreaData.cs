@@ -254,28 +254,11 @@ namespace Celeste {
                     area.CassseteNoteColor = Calc.HexToColor("33a9ee");
                     area.CassetteSong = SFX.cas_01_forsaken_city;
 
-                    // Custom values can be set via the MapMeta.
-                    MapMeta meta = new MapMeta();
-                    meta.ApplyTo(area);
-                    MapMeta metaLoaded = asset.GetMeta<MapMeta>();
-                    if (metaLoaded != null) {
-                        area.Meta = null;
-                        metaLoaded.ApplyTo(area);
-                        meta = metaLoaded;
-                    }
-
                     if (string.IsNullOrEmpty(area.Mode[0].Path))
                         area.Mode[0].Path = asset.PathVirtual.Substring(5);
 
                     // Some of the game's code checks for [1] / [2] explicitly.
                     // Let's just provide null modes to fill any gaps.
-                    meta.Modes = meta.Modes ?? new MapMetaModeProperties[3];
-                    if (meta.Modes.Length < 3) {
-                        MapMetaModeProperties[] larger = new MapMetaModeProperties[3];
-                        for (int i = 0; i < meta.Modes.Length; i++)
-                            larger[i] = meta.Modes[i];
-                        meta.Modes = larger;
-                    }
                     if (area.Mode.Length < 3) {
                         patch_ModeProperties[] larger = new patch_ModeProperties[3];
                         for (int i = 0; i < area.Mode.Length; i++)
@@ -291,7 +274,6 @@ namespace Celeste {
 
                     // Some special handling.
                     area.OnLevelBegin = (level) => {
-                        MapMeta levelMeta = patch_AreaData.Get(level.Session).Meta;
                         MapMetaModeProperties levelMetaMode = ((patch_MapData) level.Session.MapData).Meta;
 
                         if (levelMetaMode?.SeekerSlowdown ?? false)

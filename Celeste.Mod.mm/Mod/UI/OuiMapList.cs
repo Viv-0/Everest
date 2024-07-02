@@ -56,7 +56,10 @@ namespace Celeste.Mod.UI {
                     return Dialog.Clean("maplist_type_everything");
                 if (value == 2)
                     return Dialog.Clean("maplist_type_allmods");
+                if (Dialog.Has("maplist_type_" + sets[value - 3]))
+                    return Dialog.Clean("maplist_type_" + sets[value - 3]);
                 return patch_Dialog.CleanLevelSet(sets[value - 3]);
+
             }, 0, 2 + sets.Count, type).Change(value => {
                 type = value;
                 ReloadItems();

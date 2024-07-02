@@ -13,12 +13,11 @@ namespace Celeste {
                 return false;
             return orig_Has(key);
         }
-
+      
         public EntityID EntityID;
 
         internal void InitializeEntityID(string LevelName) {
             EntityID = new EntityID(string.IsNullOrWhiteSpace(LevelName) ? EntityID.None.Level : LevelName, ID + (patch_LevelData._isRegisteringTriggers ? 10000000 : 0));
         }
-
     }
 }
